@@ -1,0 +1,184 @@
+<?php
+/**
+ * @file
+ * One Time Login URL module.
+ */
+
+/**
+ * Implements hook_menu().
+ */
+function one_time_login_url_menu() {
+  $items = array();
+
+  $items['one-time-login/%/%/%/%'] = array(
+    'title' => 'Login one time',
+    'page callback' => 'one_time_login_url_page',
+    'page arguments' => array(1, 2, 3, 4),
+    'access callback' => TRUE,
+    'type' => MENU_CALLBACK,
+  );
+
+  return $items;
+}
+
+/**
+ * Generates One-Time Login URL.
+ *
+ * @param object $account
+ *   User account. Should be activated. If not specified current user account
+ *   will be used.
+ * @param string $destination
+ *   Path to redirect user after success login.
+ * @param string $expire
+ *   Expiration time. Value could be a number of seconds from now or from the
+ *   begining of Unix Epoc; of in a format suitable for strtotime() function.
+ *   @see http://php.net/manual/en/function.strtotime.php
+ *   Default is '1 hour'.
+ *
+ * @return string
+ *   Returns an absolute URL to one time login page.
+ */
+function one_time_login_url($account = null, $destination = '', $expire = '+1 week') {
+  global $user;
+
+  // Use current user account by default.
+  if (empty($account)) {
+    $account = $user;
+  }
+
+  $timestamp = REQUEST_TIME;
+
+  // Get expiration date.
+  if (($expire_timestamp = strtotime($expire)) === FALSE) {
+    if (is_numeric($expire)) {
+      $expire_timestamp = $expire;
+      if ($expire < $timestamp) {
+        $expire_timestamp += $timestamp;
+      }
+    }
+  }
+
+  // Prepare destination.
+  $options = array('absolute' => TRUE);
+  if (!empty($destination) && drupal_valid_path($destination)) {
+    if (url_is_external($destination)) {
+      return FALSE;
+    }
+    else {
+      $options['query']['destination'] = $destination;
+    }
+  }
+
+  // Build the URL.
+  if ($account->status == 1 && $expire_timestamp) {
+    $url = url(
+      "one-time-login/" . $account->uid . "/" . $timestamp . "/" . $expire_timestamp . "/" .
+        user_pass_rehash($account->pass, $expire_timestamp, $account->login, $account->uid), $options
+    );
+    watchdog('user', 'User %uid generated one-time login link %url.',
+    array('%uid' => $user->uid, '%url' => $url));
+    return $url;
+  }
+  else {
+    return FALSE;
+  }
+}
+
+/**
+ * Menu callback; process login one time link and redirect.
+ */
+function one_time_login_url_page($uid, $timestamp, $expire, $hashed_pass) {
+  global $user;
+
+  if ($user->uid) {
+    drupal_set_message(t('It is not necessary to use this link to login anymore. You are already logged in.'));
+    drupal_goto(one_time_login_url_get_destination());
+  }
+  else {
+    $current = REQUEST_TIME ;
+    $account = user_load($uid);
+    if ($timestamp < $current && isset($account) && $account->status == 1) {
+      // Deny one-time login to blocked accounts.
+      if (drupal_is_denied(ip_address())) {
+        drupal_set_message(t('You have tried to use a one-time login for an account which has been blocked.'), 'error');
+        drupal_goto("<front>");
+      }
+
+      if ($account->uid
+        && $timestamp > $account->login
+        && $timestamp < $current
+        && $hashed_pass == user_pass_rehash($account->pass, $expire, $account->login, $account->uid))
+      {
+        watchdog('user', 'One-Time Login link was used.');
+        $user = $account;
+        user_login_finalize();
+
+        // Integrate with the rules module,
+        // @see one_time_login_url.rules.inc.
+        if (module_exists('rules')) {
+          rules_invoke_event('one_time_login_url_visited', $user);
+        }
+        drupal_set_message(t('You have just used your one-time login link.'));
+        drupal_goto(one_time_login_url_get_destination());
+      }
+      else {
+        drupal_set_message(t('You have tried to use a one-time login URL which has been used. Please use the log in form to supply your username and password.'));
+        drupal_goto('user/login');
+      }
+    }
+    else {
+      drupal_access_denied();
+    }
+  }
+}
+
+/**
+ * Get the destination from current URL.
+ * Protects from using external links.
+ */
+function one_time_login_url_get_destination() {
+  if (isset($_REQUEST['destination'])) {
+    $destination =  urlencode($_REQUEST['destination']);
+  }
+  if (empty($destination) || url_is_external($destination)) {
+    $destination = "<front>";
+  }
+  return $destination;
+}
+
+/**
+ * Implements hook_user_operations().
+ */
+function one_time_login_url_user_operations() {
+  $operations = array();
+
+  $operations['one_time_login_url'] = array(
+    'label' => t('Generate one-time login url for selected users'),
+    'callback' => 'one_time_login_url_user_action',
+  );
+
+  return $operations;
+}
+
+/**
+ * Callback for 'Generate one-time login url for selected users' user operation.
+ *
+ * @see one_time_login_url_user_operations().
+ *
+ * @param array $uid_list
+ *   List of uid selected for this action.
+ */
+function one_time_login_url_user_action($uid_list) {
+  $links = array();
+
+  foreach ($uid_list as $uid) {
+    $account = user_load($uid);
+    if (is_object($account)) {
+      drupal_set_message(t('One Time Login link for user %name: %url', array(
+        '%url' => one_time_login_url($account),
+        '%name' => $account->name . '(' . $account->uid . ')'))
+      );
+    }
+  }
+}
+

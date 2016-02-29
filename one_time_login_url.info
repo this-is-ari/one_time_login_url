@@ -1,0 +1,7 @@
+name = One Time Login URL
+description = "Generates One Time Login URLs. This is just an API."
+core = 7.x
+version = "7.x-1.0"
+package = Authentication
+
+files[] = one_time_login_url.rules.inc
